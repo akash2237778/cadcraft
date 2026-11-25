@@ -8,6 +8,11 @@
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #22282f; }
     #cadcraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    /* Touch screens: the drawing area handles every finger itself (pan, pinch, press and hold).
+       Without this the browser takes two-finger gestures as page zoom and cancels the touches,
+       and a held finger starts text selection or the iOS callout instead of a right-click. */
+    html, body, #cadcraft_canvas { touch-action: none; overscroll-behavior: none;
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
     #cadcraft_loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
       color: #b8b8b8; font: 14px system-ui, sans-serif; pointer-events: none; }
   </style>
