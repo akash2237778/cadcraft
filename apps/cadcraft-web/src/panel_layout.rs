@@ -43,11 +43,43 @@ pub fn restore(ui: &mut UiState, saved: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Below this width (CSS pixels, a phone held upright) the docked Tool Sets and palettes would
+/// leave the drawing only a sliver of the screen.
+pub const COMPACT_WIDTH: f64 = 760.0;
+
+/// With no saved layout, a narrow screen starts with the Tool Sets and palettes hidden, so the
+/// drawing gets the screen (they come back from the Window menu). A saved layout, the user's own
+/// choice, is left alone; so is a width the browser could not tell (not finite or not positive).
+pub fn compact_default(ui: &mut UiState, has_saved_layout: bool, width_css: f64) {
+    if has_saved_layout || !width_css.is_finite() || width_css <= 0.0 || width_css >= COMPACT_WIDTH {
+        return;
+    }
+    ui.show_toolsets = false;
+    ui.show_palettes = false;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use cadcraft_engine::Session;
     use cadcraft_ui_egui::{CadApp, Services};
+
+    #[test]
+    fn a_phone_starts_with_the_drawing_on_the_whole_screen() {
+        let mut ui = CadApp::new(Session::default(), Services::default()).ui;
+        assert!(ui.show_toolsets && ui.show_palettes, "the desktop default shows both");
+        compact_default(&mut ui, false, 390.0);
+        assert!(!ui.show_toolsets && !ui.show_palettes, "a phone hides both");
+    }
+
+    #[test]
+    fn a_saved_layout_or_a_wide_or_unknown_screen_keeps_the_panels() {
+        for (saved, width) in [(true, 390.0), (false, 1280.0), (false, COMPACT_WIDTH), (false, f64::NAN), (false, 0.0), (false, -5.0)] {
+            let mut ui = CadApp::new(Session::default(), Services::default()).ui;
+            compact_default(&mut ui, saved, width);
+            assert!(ui.show_toolsets && ui.show_palettes, "saved={saved} width={width}");
+        }
+    }
 
     #[test]
     fn floating_and_hidden_panels_survive_storage_without_replacing_drawing_state() {

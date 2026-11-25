@@ -315,7 +315,9 @@ pub fn groups_ui(ui: &mut egui::Ui, groups: &[Vec<Entry>], clicked: &mut Option<
 
 /// Attach the menu to the canvas response: it opens on a right-click, as the object snap menu
 /// when that click held Shift or Ctrl (`CanvasState::snap_menu`).
-pub fn show(app: &mut CadApp, resp: &egui::Response) {
+/// `open` opens the menu this frame as a secondary click would (a touch screen's press and hold,
+/// [`hold`]).
+pub fn show(app: &mut CadApp, resp: &egui::Response, open: bool) {
     let mut clicked = None;
     let snap = app.canvas.snap_menu;
     // Right-Click Customization: with nothing selected (Default mode) or a selection (Edit mode),
@@ -333,7 +335,12 @@ pub fn show(app: &mut CadApp, resp: &egui::Response) {
         }
         return;
     }
-    resp.context_menu(|ui| {
+    let mut menu = egui::Popup::context_menu(resp);
+    if open {
+        // At the pointer, which is where the finger rests.
+        menu = menu.open_memory(egui::SetOpenCommand::Bool(true));
+    }
+    menu.show(|ui| {
         let groups = if snap { snap_entries(app) } else { entries(app) };
         groups_ui(ui, &groups, &mut clicked);
     });
@@ -342,6 +349,23 @@ pub fn show(app: &mut CadApp, resp: &egui::Response) {
         Some(id) => choose(app, &id),
         None => {}
     }
+}
+
+/// A press and hold on a touch screen while no command runs: what a right-click does there, the
+/// Repeat of the Right-Click Customization, or the shortcut menu at the finger (returns `true`:
+/// [`show`] opens it this frame).
+pub fn hold(app: &mut CadApp) -> bool {
+    let o = &app.options;
+    let mode =
+        if o.right_click_default == o.right_click_edit || app.session.selection().is_empty() { o.right_click_default } else { o.right_click_edit };
+    if mode == crate::options::IdleClick::Repeat
+        && let Some(last) = app.session.last_command.clone()
+    {
+        app.start(&last);
+        return false;
+    }
+    app.canvas.snap_menu = false;
+    true
 }
 
 /// When the right button went down on the canvas: (time, position).

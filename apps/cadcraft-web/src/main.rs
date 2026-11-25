@@ -172,11 +172,15 @@ mod web {
                         if let Some(prefs) = cc.storage.and_then(|s| s.get_string(cadcraft_ui_egui::PREFS_KEY)) {
                             app.load_prefs(&prefs);
                         }
-                        if let Some(layout) = cc.storage.and_then(|s| s.get_string(crate::panel_layout::KEY))
-                            && let Err(error) = crate::panel_layout::restore(&mut app.ui, &layout)
+                        let saved_layout = cc.storage.and_then(|s| s.get_string(crate::panel_layout::KEY));
+                        if let Some(layout) = &saved_layout
+                            && let Err(error) = crate::panel_layout::restore(&mut app.ui, layout)
                         {
                             log::warn!("panel layout was not restored: {error}");
                         }
+                        // A phone: the drawing gets the screen unless the user arranged the panels.
+                        let width = web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+                        crate::panel_layout::compact_default(&mut app.ui, saved_layout.is_some(), width);
                         // `?cpu`: no render state for the app, so the canvas draws with egui shapes.
                         if !crate::wants_cpu(&query())
                             && let Some(rs) = &cc.wgpu_render_state

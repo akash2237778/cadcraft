@@ -20,6 +20,7 @@ mod grid;
 mod grips;
 mod list;
 mod pick;
+pub mod touch;
 mod viewport;
 mod widgets;
 
@@ -183,6 +184,8 @@ pub struct CanvasState {
     /// The right-click that opened the shortcut menu held Shift or Ctrl: it is the object snap
     /// menu ([`crate::context_menu`]).
     pub snap_menu: bool,
+    /// Fingers on the screen: two-finger pan, press-and-hold, the touch bar ([`touch`]).
+    pub touch: touch::TouchState,
     /// Tab was pressed over a snap marker: show the next candidate ([`SnapCycle`]).
     pub snap_tab: bool,
     pub snap_cycle: Option<SnapCycle>,
@@ -266,6 +269,8 @@ struct Navigation<'a> {
     response: &'a egui::Response,
     xf: Xf,
     pointer: PointerInput,
+    /// Screen offset two or more fingers moved this frame ([`touch::TouchFrame::pan`]).
+    touch_pan: egui::Vec2,
 }
 
 fn navigate_canvas(app: &mut CadApp, ui: &mut egui::Ui, nav: &Navigation<'_>) -> Option<(bool, bool)> {
@@ -359,6 +364,53 @@ fn handle_button_navigation(app: &mut CadApp, nav: &Navigation<'_>, inside: bool
     }
     if p.dbl_middle && inside {
         let _ = app.session.zoom_extents();
+    }
+    // Two fingers moving together drag the drawing with them, like the middle button.
+    if inside
+        && nav.touch_pan != egui::Vec2::ZERO
+        && let Ok(st) = app.session.state_mut()
+    {
+        let view = st.view();
+        st.set_view_quiet(cadcraft_engine::View {
+            center: view.center - nav.xf.screen_delta_to_world(nav.touch_pan),
+            height: view.height,
+            twist: view.twist,
+        });
+    }
+}
+
+/// The drawing area's shortcut menu is open ([`crate::context_menu::show`]).
+fn shortcut_menu_open(resp: &egui::Response) -> bool {
+    egui::Popup::is_id_open(&resp.ctx, egui::Popup::default_response_id(resp))
+}
+
+/// The first finger of a pinch, a two-finger pan or a hold is not a pick: no click, no double
+/// click, and a selection window its drag opened is dropped ([`touch::TouchFrame::suppress`]).
+fn suppress_touch_picks(app: &mut CadApp, pointer: &mut PointerInput, touch: touch::TouchFrame) {
+    if !touch.suppress {
+        return;
+    }
+    pointer.pressed_primary = false;
+    pointer.dbl_primary = false;
+    if app.canvas.drag_window {
+        app.canvas.drag_window = false;
+        app.session.pending_window = None;
+    }
+}
+
+/// Press and hold on a touch screen is a right-click ([`touch::TouchFrame::hold`]): Enter while a
+/// command asks for input (`in_command`), the shortcut menu or Repeat when idle (`idle_menu`; not
+/// when the hold is egui's own long touch, which reaches the menu as a secondary click by itself).
+/// Returns whether the shortcut menu is to open this frame.
+fn touch_hold(app: &mut CadApp, touch: touch::TouchFrame, in_command: bool, idle_menu: bool) -> bool {
+    if !touch.hold || app.canvas.snap_menu {
+        return false;
+    }
+    if in_command {
+        let _ = app.session.input(Input::Enter);
+        false
+    } else {
+        idle_menu && crate::context_menu::hold(app)
     }
 }
 
@@ -733,6 +785,8 @@ struct PromptClickContext<'a> {
     middle_down: bool,
     primary_clicked: bool,
     response: &'a egui::Response,
+    /// This frame's primary pointer belongs to a touch gesture ([`touch::TouchFrame::suppress`]).
+    touch_gesture: bool,
 }
 
 fn collect_prompt_clicks(app: &mut CadApp, ui: &egui::Ui, context: PromptClickContext<'_>) -> bool {
@@ -741,6 +795,10 @@ fn collect_prompt_clicks(app: &mut CadApp, ui: &egui::Ui, context: PromptClickCo
     let point_prompt = app.session.current_prompt().is_some_and(|p| cadcraft_engine::pointmod::accepts(&p))
         && app.session.pending_window.is_none()
         && !app.session.realtime_zoom_active();
+    // A finger lifted from a pinch, a pan or a hold places nothing.
+    if context.touch_gesture {
+        return false;
+    }
     let pressed_primary = context.primary_clicked || (point_prompt && context.response.drag_stopped_by(egui::PointerButton::Primary));
     if point_prompt && context.inside && pressed_primary && !context.middle_down && app.cmd.options.is_none() && app.cmd.buffer.is_empty() {
         let releases: Vec<egui::Pos2> = ui.input(|i| {
@@ -800,7 +858,9 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     app.canvas.xf = Some(xf);
 
     // ---------- input ----------
-    let pointer = ui.input(|i| PointerInput {
+    let long_touched = resp.long_touched();
+    let touch = touch::frame(&mut app.canvas.touch, ui.ctx(), long_touched);
+    let mut pointer = ui.input(|i| PointerInput {
         hover_pos: i.pointer.hover_pos(),
         scroll: i.smooth_scroll_delta,
         mods: i.modifiers,
@@ -810,7 +870,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         dbl_middle: i.pointer.button_double_clicked(egui::PointerButton::Middle),
         dbl_primary: i.pointer.button_double_clicked(egui::PointerButton::Primary),
     });
-    let navigation = Navigation { rect, tiles: &tiles, response: &resp, xf, pointer };
+    suppress_touch_picks(app, &mut pointer, touch);
+    let navigation = Navigation { rect, tiles: &tiles, response: &resp, xf, pointer, touch_pan: touch.pan };
     let Some((inside, on_menu)) = navigate_canvas(app, ui, &navigation) else { return };
     let PointerInput { hover_pos, mods, middle_down, pressed_primary, pressed_secondary, dbl_primary, .. } = pointer;
     // Re-read the view after navigation.
@@ -846,8 +907,11 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         return;
     };
 
-    let pressed_primary =
-        collect_prompt_clicks(app, ui, PromptClickContext { rect, xf, inside, middle_down, primary_clicked: pressed_primary, response: &resp });
+    let pressed_primary = collect_prompt_clicks(
+        app,
+        ui,
+        PromptClickContext { rect, xf, inside, middle_down, primary_clicked: pressed_primary, response: &resp, touch_gesture: touch.suppress },
+    );
 
     let (raw_world, dyn_frame) = update_canvas_cursor(app, ui, &xf, inside, hover_pos);
 
@@ -927,6 +991,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if app.session.settings.pickdrag
         && resp.drag_started_by(egui::PointerButton::Primary)
         && !middle_down
+        && !touch.suppress
         && app.canvas.cycle.is_none()
         && app.session.pending_window.is_none()
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -958,6 +1023,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     if crate::context_menu::in_command(app, ui, inside, pressed_secondary) {
         let _ = app.session.input(Input::Enter);
     }
+    let hold_menu = touch_hold(app, touch, inside && !idle, inside && idle && !long_touched);
     // Right-click on a grip with options (polyline vertex, line end…) opens the grip menu.
     if inside && pressed_secondary && idle && !app.canvas.snap_menu {
         app.canvas.grip_menu = grip_at(app, &xf, hover_pos).filter(|g| !grip_options(app, *g).is_empty());
@@ -965,11 +1031,14 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     crate::dyngrips::menu(app, ui.ctx(), &xf);
     if idle && !app.canvas.snap_menu && app.canvas.grip_menu.is_some() {
         grip_menu(app, &resp);
-    } else if idle || app.canvas.snap_menu {
-        crate::context_menu::show(app, &resp);
+    } else if (idle || app.canvas.snap_menu) && !(touch.stale_long_touch && !shortcut_menu_open(&resp)) {
+        // egui's long touch repeating a hold that already acted (ended a command, say) must not
+        // open the menu; an open menu is still drawn, since a popup left out of a frame closes.
+        crate::context_menu::show(app, &resp, hold_menu);
     }
 
     update_hover(app, ui, inside, hover_pos, raw_world, scale);
+    touch::bar(app, ui.ctx(), rect);
 
     paint_canvas(CanvasPaint {
         app,
