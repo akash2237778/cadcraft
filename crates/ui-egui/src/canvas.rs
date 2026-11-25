@@ -379,6 +379,45 @@ fn handle_button_navigation(app: &mut CadApp, nav: &Navigation<'_>, inside: bool
     }
 }
 
+/// What a frame's right-click, held finger and pointer mean for the menus ([`right_click_and_menus`]).
+#[derive(Clone, Copy)]
+struct MenuInput {
+    inside: bool,
+    pressed_secondary: bool,
+    long_touched: bool,
+    mods: egui::Modifiers,
+    hover_pos: Option<Pos2>,
+    touch: touch::TouchFrame,
+}
+
+/// Right-click and press-and-hold: Enter in a command, the grip, object snap and shortcut menus.
+fn right_click_and_menus(app: &mut CadApp, ui: &mut egui::Ui, resp: &egui::Response, xf: Xf, m: MenuInput) {
+    let MenuInput { inside, pressed_secondary, long_touched, mods, hover_pos, touch } = m;
+    // Right-click acts as Enter while a command runs (the classic CAD default; held, it opens the
+    // command menu); otherwise it opens the shortcut menu (Repeat, Clipboard, …).
+    // Shift/Ctrl+right-click opens the object snap menu.
+    let idle = !app.session.prompting();
+    if inside && pressed_secondary {
+        app.canvas.snap_menu = mods.shift || mods.ctrl;
+    }
+    if crate::context_menu::in_command(app, ui, inside, pressed_secondary) {
+        let _ = app.session.input(Input::Enter);
+    }
+    let hold_menu = touch_hold(app, touch, inside && !idle, inside && idle && !long_touched);
+    // Right-click on a grip with options (polyline vertex, line end…) opens the grip menu.
+    if inside && pressed_secondary && idle && !app.canvas.snap_menu {
+        app.canvas.grip_menu = grip_at(app, &xf, hover_pos).filter(|g| !grip_options(app, *g).is_empty());
+    }
+    crate::dyngrips::menu(app, ui.ctx(), &xf);
+    if idle && !app.canvas.snap_menu && app.canvas.grip_menu.is_some() {
+        grip_menu(app, resp);
+    } else if (idle || app.canvas.snap_menu) && !(touch.stale_long_touch && !shortcut_menu_open(resp)) {
+        // egui's long touch repeating a hold that already acted (ended a command, say) must not
+        // open the menu; an open menu is still drawn, since a popup left out of a frame closes.
+        crate::context_menu::show(app, resp, hold_menu);
+    }
+}
+
 /// The drawing area's shortcut menu is open ([`crate::context_menu::show`]).
 fn shortcut_menu_open(resp: &egui::Response) -> bool {
     egui::Popup::is_id_open(&resp.ctx, egui::Popup::default_response_id(resp))
@@ -594,8 +633,11 @@ fn paint_pointer_overlay(
         draw_viewcube(app, ui, rect);
     }
     viewport_label(painter, rect);
-    // Typing and Escape reach the command line even when its overlay is hidden.
-    crate::cmdline::keyboard(app, ui.ctx());
+    // Typing and Escape reach the command line even when its overlay is hidden; not in the
+    // viewer, where no key may edit (Delete erases the selection there).
+    if !app.viewer.on {
+        crate::cmdline::keyboard(app, ui.ctx());
+    }
     // Command line overlay.
     if app.ui.show_command_line {
         crate::cmdline::show(app, ui, full);
@@ -871,6 +913,15 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         dbl_primary: i.pointer.button_double_clicked(egui::PointerButton::Primary),
     });
     suppress_touch_picks(app, &mut pointer, touch);
+    // The viewer takes the taps itself ([`crate::viewer`]): none reaches a pick, a grip, a
+    // double-click edit or a menu.
+    let viewer_on = app.viewer.on;
+    let (viewer_tap, viewer_double) = (viewer_on && pointer.pressed_primary, viewer_on && pointer.dbl_primary);
+    if viewer_on {
+        pointer.pressed_primary = false;
+        pointer.dbl_primary = false;
+        pointer.pressed_secondary = false;
+    }
     let navigation = Navigation { rect, tiles: &tiles, response: &resp, xf, pointer, touch_pan: touch.pan };
     let Some((inside, on_menu)) = navigate_canvas(app, ui, &navigation) else { return };
     let PointerInput { hover_pos, mods, middle_down, pressed_primary, pressed_secondary, dbl_primary, .. } = pointer;
@@ -914,6 +965,15 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
     );
 
     let (raw_world, dyn_frame) = update_canvas_cursor(app, ui, &xf, inside, hover_pos);
+    if viewer_double && inside {
+        let _ = app.session.zoom_extents();
+    } else if viewer_tap
+        && inside
+        && let Some(raw) = raw_world
+    {
+        let now = ui.input(|i| i.time);
+        crate::viewer::tap(app, raw, &xf, now);
+    }
 
     // A click on the Dynamic Input options menu picks the keyword; elsewhere it closes the menu.
     let mut picked = false;
@@ -992,6 +1052,7 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         && resp.drag_started_by(egui::PointerButton::Primary)
         && !middle_down
         && !touch.suppress
+        && !viewer_on
         && app.canvas.cycle.is_none()
         && app.session.pending_window.is_none()
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
@@ -1013,32 +1074,16 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
             }
         }
     }
-    // Right-click acts as Enter while a command runs (the classic CAD default; held, it opens the
-    // command menu); otherwise it opens the shortcut menu (Repeat, Clipboard, …).
-    // Shift/Ctrl+right-click opens the object snap menu.
-    let idle = !app.session.prompting();
-    if inside && pressed_secondary {
-        app.canvas.snap_menu = mods.shift || mods.ctrl;
-    }
-    if crate::context_menu::in_command(app, ui, inside, pressed_secondary) {
-        let _ = app.session.input(Input::Enter);
-    }
-    let hold_menu = touch_hold(app, touch, inside && !idle, inside && idle && !long_touched);
-    // Right-click on a grip with options (polyline vertex, line end…) opens the grip menu.
-    if inside && pressed_secondary && idle && !app.canvas.snap_menu {
-        app.canvas.grip_menu = grip_at(app, &xf, hover_pos).filter(|g| !grip_options(app, *g).is_empty());
-    }
-    crate::dyngrips::menu(app, ui.ctx(), &xf);
-    if idle && !app.canvas.snap_menu && app.canvas.grip_menu.is_some() {
-        grip_menu(app, &resp);
-    } else if (idle || app.canvas.snap_menu) && !(touch.stale_long_touch && !shortcut_menu_open(&resp)) {
-        // egui's long touch repeating a hold that already acted (ended a command, say) must not
-        // open the menu; an open menu is still drawn, since a popup left out of a frame closes.
-        crate::context_menu::show(app, &resp, hold_menu);
+    // The viewer opens no menu and takes no right-click, held finger or Enter.
+    if !viewer_on {
+        right_click_and_menus(app, ui, &resp, xf, MenuInput { inside, pressed_secondary, long_touched, mods, hover_pos, touch });
     }
 
     update_hover(app, ui, inside, hover_pos, raw_world, scale);
-    touch::bar(app, ui.ctx(), rect);
+    // The touch bar edits (Undo, Enter…): not in the viewer.
+    if !viewer_on {
+        touch::bar(app, ui.ctx(), rect);
+    }
 
     paint_canvas(CanvasPaint {
         app,
@@ -1058,6 +1103,8 @@ pub fn show(app: &mut CadApp, ui: &mut egui::Ui) {
         hover_pos,
         raw_world,
     });
+    // The viewer's measurement, over the drawing.
+    crate::viewer::overlay(app, &painter, &xf);
 }
 
 fn paint_canvas(frame: CanvasPaint<'_>) {

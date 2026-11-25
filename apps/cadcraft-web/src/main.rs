@@ -192,6 +192,10 @@ mod web {
                         if query().contains("sample") {
                             let _ = app.run("ui.sample", serde_json::json!({}));
                         }
+                        // `?viewer`: open in Viewer mode (look and measure, no editing).
+                        if query().split(['?', '&']).any(|q| q == "viewer" || q == "viewer=1") {
+                            let _ = app.run("ui.viewer", serde_json::json!({ "on": true }));
+                        }
                         // No paths on the web: OPEN asks the browser's file picker, which reads the
                         // chosen file in the background (`upload.rs`), so the picker returns none.
                         let inbox = crate::upload::Inbox::new(&cc.egui_ctx);

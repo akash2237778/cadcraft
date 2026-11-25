@@ -40,6 +40,7 @@ mod mtext_editor;
 mod panel_state;
 pub mod spacemouse;
 pub mod switch;
+pub mod viewer;
 // The Edit Text window, opened from the shortcut menu's Edit Text entry.
 pub mod textdlg;
 // The External References palette.
@@ -287,6 +288,8 @@ pub struct CadApp {
     pub options: options::UiOptions,
     pub services: Services,
     pub canvas: canvas::CanvasState,
+    /// Viewer mode: look at the drawing without changing it ([`viewer`]).
+    pub viewer: viewer::ViewerState,
     /// Desktop HID status and navigation preferences; the web host supplies no HID backend.
     pub spacemouse: spacemouse::State,
     /// Calculator data shared by its floating and docked views; durable fields live in prefs.
@@ -384,6 +387,7 @@ impl CadApp {
             options: options::UiOptions::default(),
             services,
             canvas: canvas::CanvasState::default(),
+            viewer: viewer::ViewerState::default(),
             spacemouse: spacemouse::State::default(),
             quickcalc: palettes::quickcalc::State::default(),
             cmd: cmdline::CmdLine::default(),
@@ -1060,7 +1064,10 @@ impl CadApp {
 
     /// Input-derived work, once per layout frame.
     fn ui_input(&mut self, ctx: &egui::Context) {
-        menus::shortcuts(self, ctx);
+        // The viewer edits nothing, so no shortcut (Delete, Ctrl+Z, a command key) reaches it.
+        if !self.viewer.on {
+            menus::shortcuts(self, ctx);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let dropped = ctx.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
@@ -1081,6 +1088,18 @@ impl CadApp {
         let t0 = now_ms();
         control::begin_frame(ui.ctx());
         let t = theme::Tokens::get();
+        if self.viewer.on && !self.session.docs.is_empty() {
+            // Viewer mode: the drawing and the viewer's own bar and card, nothing that edits.
+            viewer::top_bar(self, ui);
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| canvas::show(self, ui));
+            if self.viewer.on {
+                viewer::card(self, ui.ctx());
+            }
+            dialogs::show(self, ui.ctx());
+            autosave::failure_notice(self, ui.ctx());
+            self.frame_ms = now_ms() - t0;
+            return;
+        }
         chrome::title_and_toolbar(self, ui);
         if self.ui.in_window_menu {
             menus::menu_bar(self, ui);

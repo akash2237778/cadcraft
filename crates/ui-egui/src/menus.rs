@@ -97,6 +97,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.animations.off", "Off", &["View", "Accessibility", "Animation Effects", "Off"], None),
     ("ui.animations", "Animation Effects", &[], None),
     ("ui.toggle.toolbar", "Tool Bar", &["Window", "Tool Bar"], None),
+    ("ui.viewer", "Viewer Mode", &["View", "Viewer Mode"], None),
     ("ui.toggle.filetabs", "File Tab", &["Window", "File Tab"], None),
     ("ui.toggle.statusbar", "Status Bar", &["Window", "Status Bar"], None),
     ("ui.toggle.cmdline", "Command Line", &["Window", "Command Line"], Some("Cmd+9")),
@@ -157,6 +158,9 @@ fn route_ui_subsystems(app: &mut CadApp, id: &str, params: &Value) -> Option<Res
         return Some(r);
     }
     if let Some(r) = crate::bedit::route(app, id, params) {
+        return Some(r);
+    }
+    if let Some(r) = crate::viewer::route(app, id, params) {
         return Some(r);
     }
     if let Some(r) = crate::managers::route(app, id, params) {
